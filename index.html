@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rent Calculator</title>
+<!--
+  Pro-rated rent calculator with PDF export. A single static page, published with
+  GitHub Pages at https://normanwqn.github.io/rent-calculator/ (the private rent app
+  redirects there from /calculator). You can also open this file directly in a browser.
+
+    Cost  = Quantity x Unit Price            (per line item, rounded to cents)
+    Rate  = Num Days / Days in Month
+    Total = sum of Costs x Rate
+
+  Quantity is the roommate's share of a bill: 1/2 of a monthly bill, 1/6 of a
+  quarterly bill, 1/24 of an annual bill.
+
+  Everything lives in this browser's localStorage. The working values are saved as
+  you type; "Save as defaults" snapshots the items and invoice details that
+  "Reset to defaults" restores. The PDF is drawn in the browser with jsPDF, which is
+  fetched from jsDelivr the first time you export.
+-->
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1c1c1e; --muted: #6b7280;
+    --line: #e3e5e9; --accent: #497b9f; --on-accent: #ffffff;
+    --input: #ffffff; --total-bg: #edf3f7; --danger: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111214; --card: #1b1c1f; --text: #f1f1f1; --muted: #9aa0a6;
+      --line: #2e3035; --accent: #5b8fb5; --input: #232428; --total-bg: #1f2e39;
+      --danger: #e4675a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 28px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .05em;
+    text-transform: uppercase; color: var(--muted); padding: 4px 6px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  td { padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  input, select {
+    font: inherit; color: inherit; background: var(--input);
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; width: 100%;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.cost { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-right: 10px; }
+  td.remove-cell { width: 34px; padding: 0; text-align: center; }
+  .remove {
+    background: none; border: none; color: var(--muted); font-size: 20px;
+    line-height: 1; cursor: pointer; padding: 6px;
+  }
+  .remove:hover { color: var(--danger); }
+  .btn {
+    font: inherit; color: var(--text); background: var(--card);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; cursor: pointer;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn:disabled { opacity: .6; cursor: default; }
+  .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+  .status { font-size: 13px; color: var(--muted); margin: 8px 0 0; min-height: 1.2em; }
+  .status.err { color: var(--danger); }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .field { flex: 1 1 130px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 12px; margin-top: 10px; }
+  .grid .wide { grid-column: 1 / -1; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  details > summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 8px; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "\25B8"; font-size: 12px; color: var(--muted); transition: transform .15s; }
+  details[open] > summary::before { transform: rotate(90deg); }
+  details > summary .note { font-weight: 400; font-size: 12px; color: var(--muted); }
+  .summary {
+    display: grid; grid-template-columns: 1fr auto; gap: 6px 16px;
+    font-variant-numeric: tabular-nums;
+  }
+  .summary .k { color: var(--muted); }
+  .summary .v { text-align: right; }
+  .total {
+    margin-top: 12px; padding: 12px 14px; background: var(--total-bg); border-radius: 10px;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+    font-weight: 700; font-size: 22px; font-variant-numeric: tabular-nums;
+  }
+  @media (max-width: 600px) {
+    th:nth-child(2), td:nth-child(2) { width: 84px; }
+    th:nth-child(3), td:nth-child(3) { width: 104px; }
+    .total { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Rent Calculator</h1>
+  <p class="sub">Cost = Quantity &times; Unit Price. Total = sum of Costs &times; Num Days &divide; Days in Month.</p>
+
+  <section class="card">
+    <table id="items">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="num">Quantity</th>
+          <th class="num">Unit Price</th>
+          <th class="num">Cost</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div class="actions">
+      <button class="btn" id="add" type="button">+ Add item</button>
+    </div>
+    <p class="hint">
+      Quantity is the roommate&rsquo;s share of the bill: 1/2 of a monthly bill, 1/6 of a quarterly bill,
+      1/24 of an annual bill. Fractions (1/6) and decimals (0.5) both work.
+    </p>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <div class="field">
+        <label for="month">Month</label>
+        <select id="month"></select>
+      </div>
+      <div class="field">
+        <label for="year">Year</label>
+        <input id="year" type="number" min="2000" max="2100" inputmode="numeric">
+      </div>
+      <div class="field">
+        <label for="daysInMonth">Days in Month</label>
+        <input id="daysInMonth" type="number" min="1" max="31" inputmode="numeric">
+      </div>
+      <div class="field">
+        <label for="numDays">Num Days</label>
+        <input id="numDays" type="number" min="0" max="31" inputmode="numeric">
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <details id="detailsBox">
+      <summary>Invoice details <span class="note">used on the PDF; saved with your defaults</span></summary>
+      <div class="grid">
+        <div>
+          <label for="d-attention">Attention (tenant)</label>
+          <input id="d-attention" data-detail="attention" placeholder="Tenant name" autocomplete="off">
+        </div>
+        <div>
+          <label for="date">Invoice date</label>
+          <input id="date" type="date">
+        </div>
+        <div>
+          <label for="d-senderName">Your name</label>
+          <input id="d-senderName" data-detail="senderName" placeholder="Shown in the letterhead and signature" autocomplete="off">
+        </div>
+        <div>
+          <label for="d-phone">Phone</label>
+          <input id="d-phone" data-detail="phone" inputmode="tel" autocomplete="off">
+        </div>
+        <div>
+          <label for="d-email">Email</label>
+          <input id="d-email" data-detail="email" inputmode="email" autocomplete="off">
+        </div>
+        <div>
+          <label for="d-address1">Address line 1</label>
+          <input id="d-address1" data-detail="address1" autocomplete="off">
+        </div>
+        <div>
+          <label for="d-address2">Address line 2</label>
+          <input id="d-address2" data-detail="address2" autocomplete="off">
+        </div>
+        <div class="wide">
+          <label for="d-closing">Closing note</label>
+          <input id="d-closing" data-detail="closing" autocomplete="off">
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section class="card">
+    <div class="summary">
+      <span class="k">Subtotal</span><span class="v" id="subtotal">$0.00</span>
+      <span class="k">Rate</span><span class="v" id="rate">&mdash;</span>
+    </div>
+    <div class="total">
+      <span id="totalLabel">Total</span>
+      <span id="total">$0.00</span>
+    </div>
+    <div class="actions">
+      <button class="btn primary" id="exportPdf" type="button">Export PDF</button>
+      <button class="btn" id="copy" type="button">Copy summary</button>
+      <button class="btn" id="saveDefaults" type="button">Save as defaults</button>
+      <button class="btn" id="reset" type="button">Reset to defaults</button>
+    </div>
+    <p class="status" id="status"></p>
+    <p class="hint">
+      Values are remembered in this browser as you type. &ldquo;Save as defaults&rdquo; stores the current
+      items and invoice details so &ldquo;Reset to defaults&rdquo; brings them back next month.
+    </p>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var STORAGE_KEY  = "rent-calculator-v1";
+  var DEFAULTS_KEY = "rent-calculator-defaults-v1";
+  var JSPDF_URL = "https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js";
+  var JSPDF_SRI = "sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/";
+  var MONTHS = ["January", "February", "March", "April", "May", "June", "July",
+                "August", "September", "October", "November", "December"];
+  var BUILTIN_ITEMS = [
+    { label: "HOA",          qty: "1/2",  price: "" },
+    { label: "Property Tax", qty: "1/6",  price: "" },
+    { label: "Spectrum",     qty: "1/2",  price: "" },
+    { label: "ConEd",        qty: "1/2",  price: "" },
+    { label: "Insurance",    qty: "1/24", price: "" }
+  ];
+  var BUILTIN_DETAILS = {
+    attention: "", senderName: "", phone: "", email: "",
+    address1: "", address2: "", closing: "Thank you for your stay."
+  };
+
+  function $(id) { return document.getElementById(id); }
+  var tbody       = document.querySelector("#items tbody");
+  var monthEl     = $("month");
+  var yearEl      = $("year");
+  var daysInMonEl = $("daysInMonth");
+  var numDaysEl   = $("numDays");
+  var dateEl      = $("date");
+  var detailsBox  = $("detailsBox");
+  var detailEls   = Array.prototype.slice.call(document.querySelectorAll("[data-detail]"));
+  var subtotalEl  = $("subtotal");
+  var rateEl      = $("rate");
+  var totalEl     = $("total");
+  var totalLabel  = $("totalLabel");
+  var statusEl    = $("status");
+  var copyBtn     = $("copy");
+  var exportBtn   = $("exportPdf");
+
+  var lastModel = null;
+
+  // ---- helpers ------------------------------------------------------------
+
+  // Round to cents, half-up on the decimal value (0.5 * 212.31 = 106.155 -> 106.16).
+  function round2(x) { return Math.round(x * 100 + 1e-9) / 100; }
+
+  // "1/6", "0.5", "50%" -> number
+  function parseQty(raw) {
+    var s = String(raw).trim();
+    if (!s) return NaN;
+    var frac = s.match(/^(\d*\.?\d+)\s*\/\s*(\d*\.?\d+)$/);
+    if (frac) return Number(frac[1]) / Number(frac[2]);
+    if (s.slice(-1) === "%") return Number(s.slice(0, -1)) / 100;
+    return Number(s);
+  }
+
+  // "$1,041.00" -> 1041
+  function parseMoney(raw) {
+    var s = String(raw).replace(/[$,\s]/g, "");
+    return s ? Number(s) : NaN;
+  }
+
+  function money(x) {
+    return (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString("en-US", {
+      minimumFractionDigits: 2, maximumFractionDigits: 2
+    });
+  }
+
+  // 15 significant digits, the way a spreadsheet shows 1/6 (0.166666666666667).
+  function fmtQty(q) { return isFinite(q) ? String(Number(q.toPrecision(15))) : ""; }
+
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function todayISO() {
+    var d = new Date();
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+  function fmtDateUS(iso) {
+    var p = String(iso).split("-");
+    return p.length === 3 ? p[1] + "/" + p[2] + "/" + p[0] : iso;
+  }
+  function daysIn(year, monthIndex) { return new Date(year, monthIndex + 1, 0).getDate(); }
+
+  function setStatus(msg, isError) {
+    statusEl.textContent = msg || "";
+    statusEl.classList.toggle("err", !!isError);
+  }
+  function flashButton(btn, msg) {
+    var label = btn.getAttribute("data-label") || btn.textContent;
+    btn.setAttribute("data-label", label);
+    btn.textContent = msg;
+    setTimeout(function () { btn.textContent = label; }, 1500);
+  }
+
+  // ---- rows ---------------------------------------------------------------
+
+  function addRow(item) {
+    var tr = document.createElement("tr");
+    tr.innerHTML =
+      '<td><input class="label" placeholder="Description" aria-label="Description"></td>' +
+      '<td><input class="qty num" placeholder="1/2" inputmode="decimal" aria-label="Quantity"></td>' +
+      '<td><input class="price num" placeholder="0.00" inputmode="decimal" aria-label="Unit price"></td>' +
+      '<td class="cost">$0.00</td>' +
+      '<td class="remove-cell"><button class="remove" type="button" title="Remove" aria-label="Remove item">&times;</button></td>';
+    tr.querySelector(".label").value = item.label || "";
+    tr.querySelector(".qty").value   = item.qty   || "";
+    tr.querySelector(".price").value = item.price || "";
+    tr.querySelector(".remove").addEventListener("click", function () {
+      tr.remove();
+      recalc();
+    });
+    tr.addEventListener("input", recalc);
+    tbody.appendChild(tr);
+    return tr;
+  }
+
+  // Reads every row, updates its Cost cell, and returns the parsed items.
+  function readRows() {
+    return Array.prototype.map.call(tbody.querySelectorAll("tr"), function (tr) {
+      var qtyRaw   = tr.querySelector(".qty").value;
+      var priceRaw = tr.querySelector(".price").value;
+      var qty      = parseQty(qtyRaw);
+      var price    = parseMoney(priceRaw);
+      var cost     = (isFinite(qty) && isFinite(price)) ? round2(qty * price) : 0;
+      tr.querySelector(".cost").textContent = money(cost);
+      return {
+        label: tr.querySelector(".label").value,
+        qtyRaw: qtyRaw, qty: qty,
+        priceRaw: priceRaw, price: price,
+        cost: cost
+      };
+    });
+  }
+
+  // ---- invoice details ----------------------------------------------------
+
+  function getDetails() {
+    var d = {};
+    detailEls.forEach(function (el) { d[el.getAttribute("data-detail")] = el.value.trim(); });
+    return d;
+  }
+  function setDetails(d) {
+    detailEls.forEach(function (el) {
+      var key = el.getAttribute("data-detail");
+      el.value = d[key] !== undefined ? d[key] : "";
+    });
+  }
+
+  // ---- calculation --------------------------------------------------------
+
+  function buildModel() {
+    var items       = readRows();
+    var subtotal    = round2(items.reduce(function (s, it) { return s + it.cost; }, 0));
+    var daysInMonth = Number(daysInMonEl.value);
+    var numDays     = numDaysEl.value === "" ? NaN : Number(numDaysEl.value);
+    var rate        = (daysInMonth > 0 && isFinite(numDays)) ? numDays / daysInMonth : NaN;
+    var total       = isFinite(rate) ? round2(subtotal * rate) : NaN;
+    return {
+      items: items, subtotal: subtotal,
+      numDays: numDays, daysInMonth: daysInMonth, rate: rate, total: total,
+      monthName: MONTHS[Number(monthEl.value)] + " " + yearEl.value,
+      dateISO: dateEl.value || todayISO(),
+      details: getDetails()
+    };
+  }
+
+  function recalc() {
+    var m = buildModel();
+    subtotalEl.textContent = money(m.subtotal);
+    rateEl.textContent = isFinite(m.rate)
+      ? m.numDays + " / " + m.daysInMonth + " = " + m.rate.toLocaleString("en-US", { maximumFractionDigits: 6 })
+      : "—";
+    totalLabel.textContent = "Total — " + m.monthName + " Rent";
+    totalEl.textContent = isFinite(m.total) ? money(m.total) : "—";
+    lastModel = m;
+    save(m);
+  }
+
+  function buildSummary(m) {
+    var lines = [m.monthName + " Rent", ""];
+    m.items.forEach(function (it) {
+      if (!it.label && !it.priceRaw) return;
+      lines.push(it.label + ": " + it.qtyRaw + " × " +
+                 (isFinite(it.price) ? money(it.price) : "?") + " = " + money(it.cost));
+    });
+    lines.push("", "Subtotal: " + money(m.subtotal));
+    if (isFinite(m.rate)) {
+      lines.push("Num Days: " + m.numDays, "Days in Month: " + m.daysInMonth,
+                 "Rate: " + m.numDays + "/" + m.daysInMonth + " = " + m.rate.toFixed(6));
+      lines.push("", "Total: " + money(m.total));
+    }
+    return lines.join("\n");
+  }
+
+  // ---- persistence --------------------------------------------------------
+
+  function snapshotItems(items) {
+    return items.map(function (it) { return { label: it.label, qty: it.qtyRaw, price: it.priceRaw }; });
+  }
+
+  function save(m) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        items: snapshotItems(m.items), details: m.details,
+        month: monthEl.value, year: yearEl.value,
+        daysInMonth: daysInMonEl.value, numDays: numDaysEl.value
+      }));
+    } catch (e) { /* storage unavailable: still works, just does not remember */ }
+  }
+
+  function loadJSON(key) {
+    try {
+      var raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+
+  function saveDefaults() {
+    var m = lastModel || buildModel();
+    try {
+      localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ items: snapshotItems(m.items), details: m.details }));
+      flashButton($("saveDefaults"), "Saved!");
+      setStatus("");
+    } catch (e) {
+      setStatus("Could not save defaults: browser storage is unavailable.", true);
+    }
+  }
+
+  function resetToDefaults() {
+    var d = loadJSON(DEFAULTS_KEY) || {};
+    init({
+      items:   (d.items && d.items.length) ? d.items : BUILTIN_ITEMS,
+      details: d.details || BUILTIN_DETAILS
+    });
+    flashButton($("reset"), "Reset");
+  }
+
+  // ---- PDF export ---------------------------------------------------------
+
+  function loadJsPDF() {
+    if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = JSPDF_URL;
+      if (JSPDF_SRI) { s.integrity = JSPDF_SRI; s.crossOrigin = "anonymous"; }
+      s.onload = function () {
+        if (window.jspdf && window.jspdf.jsPDF) resolve(window.jspdf.jsPDF);
+        else reject(new Error("The PDF library loaded but did not initialize."));
+      };
+      s.onerror = function () { reject(new Error("Could not load the PDF library. Check your connection and try again.")); };
+      document.head.appendChild(s);
+    });
+  }
+
+  // Standard PDF fonts only cover Latin-1, so swap typographic punctuation for ASCII.
+  function pdfSafe(s) {
+    return String(s)
+      .replace(/[‘’]/g, "'").replace(/[“”]/g, '"')
+      .replace(/[–—]/g, "-").replace(/…/g, "...").replace(/×/g, "x");
+  }
+
+  // Draws the invoice: letterhead on the left, details and the cost table on the right.
+  function buildPdf(jsPDF, m) {
+    var doc = new jsPDF({ unit: "mm", format: "letter" });
+    var BLUE = [73, 123, 159], DARK = [67, 67, 67], MID = [95, 95, 95], DOT = [173, 173, 173];
+    var BLACK = [0, 0, 0], WHITE = [255, 255, 255];
+    var L = 19, R = 215.9 - 19;        // page margins
+    var X = 68;                        // right column: details and table
+    var COLS = [30, 40, 25, 26];       // Description, Quantity, Unit Price, Cost
+    var ROW = 8, PAD = 2, BASE = 5.5;  // row height, cell padding, text baseline within a row
+    var xs = [X];
+    COLS.forEach(function (w, i) { xs.push(xs[i] + w); });
+    var tableW = xs[4] - X;
+    var d = m.details;
+
+    function font(style, size, color) {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(size);
+      doc.setTextColor(color[0], color[1], color[2]);
+    }
+    function text(str, x, y, opts) { doc.text(pdfSafe(str), x, y, opts || {}); }
+    // Shrinks a long label so it stays inside its column.
+    function cellText(str, x, y, maxW) {
+      var size = doc.getFontSize(), s = size;
+      while (doc.getTextWidth(pdfSafe(str)) > maxW && s > 7) { s -= 0.5; doc.setFontSize(s); }
+      text(str, x, y);
+      doc.setFontSize(size);
+    }
+    function dotted() { doc.setDrawColor(DOT[0], DOT[1], DOT[2]); doc.setLineWidth(0.2); doc.setLineDashPattern([0.4, 1.0], 0); }
+    function solid()  { doc.setDrawColor(0, 0, 0); doc.setLineWidth(0.3); doc.setLineDashPattern([], 0); }
+    function hline(y, isDotted) {
+      if (isDotted) dotted(); else solid();
+      doc.line(X, y, X + tableW, y);
+      doc.setLineDashPattern([], 0);
+    }
+
+    // Rules top and bottom
+    doc.setDrawColor(BLUE[0], BLUE[1], BLUE[2]);
+    doc.setLineWidth(0.8);
+    doc.line(L, 14, R, 14);
+    doc.line(L, 265, R, 265);
+
+    // Letterhead (left column)
+    if (d.senderName) { font("bold", 15, BLUE); text(d.senderName.toUpperCase(), L, 24); }
+    font("normal", 24, DARK);
+    text("RENT", L, 56);
+    var ly = 72, leftW = X - L - 4;   // shrink long lines so they stay out of the right column
+    font("bold", 12, BLUE);
+    [d.phone, d.email].forEach(function (s) { if (s) { cellText(s, L, ly, leftW); ly += 6; } });
+    ly += 8;
+    font("bold", 12, MID);
+    [d.address1, d.address2].forEach(function (s) { if (s) { cellText(s, L, ly, leftW); ly += 8; } });
+
+    // Right column
+    var y = 56;
+    font("normal", 11, BLACK);
+    if (d.attention) { text("Attention: " + d.attention, X, y); y += 6; }
+    text("Date: " + fmtDateUS(m.dateISO), X, y); y += 10;
+    text(m.monthName + " Rent", X, y); y += 8;
+
+    // Table header
+    var tableTop = y;
+    doc.setFillColor(BLUE[0], BLUE[1], BLUE[2]);
+    doc.rect(X, y, tableW, ROW, "F");
+    font("bold", 11, WHITE);
+    ["Description", "Quantity", "Unit Price", "Cost"].forEach(function (h, i) { text(h, xs[i] + PAD, y + BASE); });
+    y += ROW;
+
+    // Line items
+    font("normal", 11, BLACK);
+    m.items.forEach(function (it, i) {
+      if (i > 0) hline(y, true);
+      cellText(it.label, xs[0] + PAD, y + BASE, COLS[0] - 2 * PAD);
+      text(fmtQty(it.qty), xs[2] - PAD, y + BASE, { align: "right" });
+      text(isFinite(it.price) ? money(it.price) : "", xs[3] - PAD, y + BASE, { align: "right" });
+      text(money(it.cost), xs[4] - PAD, y + BASE, { align: "right" });
+      y += ROW;
+    });
+
+    // Days, rate, total
+    function labelRow(label, value) {
+      font("bold", 11, BLACK);   text(label, xs[0] + PAD, y + BASE);
+      font("normal", 11, BLACK); text(value, xs[2] - PAD, y + BASE, { align: "right" });
+      y += ROW;
+    }
+    hline(y, false);
+    labelRow("Num Days", String(m.numDays));
+    labelRow("Days in Month", String(m.daysInMonth));
+    hline(y, false);
+    labelRow("Rate", fmtQty(m.rate));
+    hline(y, false);
+    text("Total", xs[2] + PAD, y + BASE);
+    text(money(m.total), xs[4] - PAD, y + BASE, { align: "right" });
+    y += ROW;
+    hline(y, false);
+
+    // Dotted column separators
+    dotted();
+    for (var c = 1; c < 4; c++) doc.line(xs[c], tableTop + ROW, xs[c], y);
+    doc.setLineDashPattern([], 0);
+
+    // Closing
+    y += 14;
+    font("normal", 11, BLACK);
+    if (d.closing) {
+      var lines = doc.splitTextToSize(pdfSafe(d.closing), R - X);
+      doc.text(lines, X, y);
+      y += 5 * lines.length + 5;
+    }
+    text("Sincerely yours,", X, y); y += 9;
+    if (d.senderName) text(d.senderName, X, y);
+
+    return doc;
+  }
+
+  function exportPdf() {
+    var m = lastModel || buildModel();
+    if (!isFinite(m.total)) { setStatus("Enter Num Days and Days in Month first.", true); return; }
+    exportBtn.disabled = true;
+    setStatus("Preparing PDF…");
+    loadJsPDF().then(function (jsPDF) {
+      buildPdf(jsPDF, m).save(m.monthName + " Rent.pdf");
+      setStatus("");
+    }).catch(function (err) {
+      setStatus(err && err.message ? err.message : String(err), true);
+    }).then(function () { exportBtn.disabled = false; });
+  }
+
+  // ---- setup --------------------------------------------------------------
+
+  function setDaysInMonthFromDate() {
+    var y = Number(yearEl.value), m = Number(monthEl.value);
+    if (y >= 1 && m >= 0) daysInMonEl.value = daysIn(y, m);
+  }
+
+  function init(saved) {
+    tbody.innerHTML = "";
+    var today = new Date();
+    ((saved && saved.items && saved.items.length) ? saved.items : BUILTIN_ITEMS).forEach(addRow);
+    setDetails(Object.assign({}, BUILTIN_DETAILS, (saved && saved.details) || {}));
+
+    monthEl.value = saved && saved.month !== undefined ? saved.month : String(today.getMonth());
+    yearEl.value  = saved && saved.year ? saved.year : String(today.getFullYear());
+    if (saved && saved.daysInMonth) daysInMonEl.value = saved.daysInMonth; else setDaysInMonthFromDate();
+    numDaysEl.value = saved && saved.numDays !== undefined ? saved.numDays : daysInMonEl.value;
+    dateEl.value = todayISO();
+    detailsBox.open = !getDetails().senderName;   // open until the letterhead is filled in
+    recalc();
+  }
+
+  MONTHS.forEach(function (name, i) {
+    var opt = document.createElement("option");
+    opt.value = String(i);
+    opt.textContent = name;
+    monthEl.appendChild(opt);
+  });
+
+  monthEl.addEventListener("change", function () { setDaysInMonthFromDate(); recalc(); });
+  yearEl.addEventListener("input",   function () { setDaysInMonthFromDate(); recalc(); });
+  daysInMonEl.addEventListener("input", recalc);
+  numDaysEl.addEventListener("input", recalc);
+  dateEl.addEventListener("input", recalc);
+  detailEls.forEach(function (el) { el.addEventListener("input", recalc); });
+
+  $("add").addEventListener("click", function () {
+    addRow({ label: "", qty: "1/2", price: "" }).querySelector(".label").focus();
+    recalc();
+  });
+  $("saveDefaults").addEventListener("click", saveDefaults);
+  $("reset").addEventListener("click", resetToDefaults);
+  exportBtn.addEventListener("click", exportPdf);
+
+  copyBtn.addEventListener("click", function () {
+    var summary = buildSummary(lastModel || buildModel());
+    var done = function () { flashButton(copyBtn, "Copied!"); };
+    var fallback = function () {
+      var ta = document.createElement("textarea");
+      ta.value = summary;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { /* ignore */ }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(summary).then(done, fallback);
+    } else {
+      fallback();
+    }
+  });
+
+  // First run: working values if any, else saved defaults, else built-ins.
+  var saved = loadJSON(STORAGE_KEY);
+  if (!saved) {
+    var defaults = loadJSON(DEFAULTS_KEY);
+    if (defaults) saved = { items: defaults.items, details: defaults.details };
+  }
+  init(saved);
+})();
+</script>
+</body>
+</html>
