@@ -76,6 +76,8 @@
   .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
   .hint { color: var(--muted); font-size: 12px; margin: 10px 0 0; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+  .toolbar .k { font-size: 12px; color: var(--muted); margin-right: 4px; }
   .status { font-size: 13px; color: var(--muted); margin: 8px 0 0; min-height: 1.2em; }
   .status.err { color: var(--danger); }
   .row { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -206,13 +208,22 @@
     <div class="actions">
       <button class="btn primary" id="exportPdf" type="button">Export PDF</button>
       <button class="btn" id="copy" type="button">Copy summary</button>
+    </div>
+    <div class="toolbar">
+      <span class="k">Defaults</span>
       <button class="btn" id="saveDefaults" type="button">Save as defaults</button>
       <button class="btn" id="reset" type="button">Reset to defaults</button>
+      <button class="btn" id="copyLink" type="button">Copy setup link</button>
+      <button class="btn" id="exportDefaults" type="button">Export file</button>
+      <button class="btn" id="importDefaults" type="button">Import file</button>
+      <input type="file" id="importFile" accept=".json,application/json" hidden>
     </div>
     <p class="status" id="status"></p>
     <p class="hint">
-      Values are remembered in this browser as you type. &ldquo;Save as defaults&rdquo; stores the current
-      items and invoice details so &ldquo;Reset to defaults&rdquo; brings them back next month.
+      Values are remembered in this browser as you type, and &ldquo;Save as defaults&rdquo; keeps the current items
+      and invoice details for &ldquo;Reset to defaults&rdquo;. Browser storage can be cleared, so for something that
+      lasts: &ldquo;Copy setup link&rdquo; gives you a URL with your defaults built in. Bookmark it or send it to your
+      phone, and opening it restores them anywhere. &ldquo;Export file&rdquo; saves the same thing as a JSON file.
     </p>
   </section>
 </main>
@@ -433,15 +444,106 @@
     } catch (e) { return null; }
   }
 
-  function saveDefaults() {
+  function currentDefaults() {
     var m = lastModel || buildModel();
+    return { items: snapshotItems(m.items), details: m.details };
+  }
+
+  function storeDefaults(d) {
+    try { localStorage.setItem(DEFAULTS_KEY, JSON.stringify(d)); return true; }
+    catch (e) { return false; }
+  }
+
+  function saveDefaults() {
+    if (storeDefaults(currentDefaults())) { flashButton($("saveDefaults"), "Saved!"); setStatus(""); }
+    else setStatus("Could not save defaults: browser storage is unavailable.", true);
+  }
+
+  // Accepts a parsed defaults object (from a link or a file); returns null if it is not one.
+  function validDefaults(d) {
+    if (!d || typeof d !== "object" || !Array.isArray(d.items)) return null;
+    var items = d.items.filter(function (it) { return it && typeof it === "object"; }).map(function (it) {
+      return { label: String(it.label || ""), qty: String(it.qty || ""), price: String(it.price || "") };
+    });
+    var details = {};
+    Object.keys(BUILTIN_DETAILS).forEach(function (k) {
+      details[k] = d.details && d.details[k] !== undefined ? String(d.details[k]) : BUILTIN_DETAILS[k];
+    });
+    return { items: items, details: details };
+  }
+
+  // Defaults travel in the URL fragment as base64url JSON, so a bookmark carries them.
+  function encodeDefaults(d) {
+    var json = JSON.stringify(d);
+    var b64 = btoa(unescape(encodeURIComponent(json)));
+    return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function decodeDefaults(str) {
     try {
-      localStorage.setItem(DEFAULTS_KEY, JSON.stringify({ items: snapshotItems(m.items), details: m.details }));
-      flashButton($("saveDefaults"), "Saved!");
-      setStatus("");
-    } catch (e) {
-      setStatus("Could not save defaults: browser storage is unavailable.", true);
-    }
+      var b64 = str.replace(/-/g, "+").replace(/_/g, "/");
+      while (b64.length % 4) b64 += "=";
+      return validDefaults(JSON.parse(decodeURIComponent(escape(atob(b64)))));
+    } catch (e) { return null; }
+  }
+  function setupLink(d) {
+    return location.href.split("#")[0] + "#d=" + encodeDefaults(d);
+  }
+  function defaultsFromHash() {
+    var h = location.hash || "";
+    return h.indexOf("#d=") === 0 ? decodeDefaults(h.slice(3)) : null;
+  }
+
+  function copyText(text, btn) {
+    var done = function () { flashButton(btn, "Copied!"); };
+    var fallback = function () {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { /* ignore */ }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+    else fallback();
+  }
+
+  function copySetupLink() {
+    var d = currentDefaults();
+    storeDefaults(d);
+    var link = setupLink(d);
+    history.replaceState(null, "", link);   // the address bar now holds the link, so bookmarking works too
+    copyText(link, $("copyLink"));
+    setStatus("Setup link copied. Bookmark it or send it to another device; opening it restores these defaults.");
+  }
+
+  function exportDefaults() {
+    var d = currentDefaults();
+    storeDefaults(d);
+    var blob = new Blob([JSON.stringify(d, null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "rent-calculator-defaults.json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+  }
+
+  function importDefaultsFile(file) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var d = null;
+      try { d = validDefaults(JSON.parse(reader.result)); } catch (e) { d = null; }
+      if (!d) { setStatus("That file is not a rent-calculator defaults file.", true); return; }
+      storeDefaults(d);
+      init({ items: d.items, details: d.details });
+      setStatus("Defaults imported from " + file.name + " and saved.");
+    };
+    reader.onerror = function () { setStatus("Could not read " + file.name + ".", true); };
+    reader.readAsText(file);
   }
 
   function resetToDefaults() {
@@ -646,36 +748,37 @@
   });
   $("saveDefaults").addEventListener("click", saveDefaults);
   $("reset").addEventListener("click", resetToDefaults);
+  $("copyLink").addEventListener("click", copySetupLink);
+  $("exportDefaults").addEventListener("click", exportDefaults);
+  $("importDefaults").addEventListener("click", function () { $("importFile").click(); });
+  $("importFile").addEventListener("change", function () {
+    if (this.files && this.files[0]) importDefaultsFile(this.files[0]);
+    this.value = "";
+  });
   exportBtn.addEventListener("click", exportPdf);
 
   copyBtn.addEventListener("click", function () {
-    var summary = buildSummary(lastModel || buildModel());
-    var done = function () { flashButton(copyBtn, "Copied!"); };
-    var fallback = function () {
-      var ta = document.createElement("textarea");
-      ta.value = summary;
-      ta.setAttribute("readonly", "");
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand("copy"); done(); } catch (e) { /* ignore */ }
-      document.body.removeChild(ta);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(summary).then(done, fallback);
-    } else {
-      fallback();
-    }
+    copyText(buildSummary(lastModel || buildModel()), copyBtn);
   });
 
-  // First run: working values if any, else saved defaults, else built-ins.
+  // Startup order: a setup link in the URL (only when it differs from the defaults already
+  // stored here, so reloading a bookmarked link does not wipe this month's edits), then this
+  // browser's working values, then its saved defaults, then the built-ins.
   var saved = loadJSON(STORAGE_KEY);
+  var linked = defaultsFromHash();
+  if (linked) {
+    var stored = loadJSON(DEFAULTS_KEY);
+    if (!stored || encodeDefaults(validDefaults(stored) || {}) !== encodeDefaults(linked)) {
+      storeDefaults(linked);
+      saved = { items: linked.items, details: linked.details };
+    }
+  }
   if (!saved) {
     var defaults = loadJSON(DEFAULTS_KEY);
     if (defaults) saved = { items: defaults.items, details: defaults.details };
   }
   init(saved);
+  if (linked) setStatus("Defaults loaded from the setup link.");
 })();
 </script>
 </body>

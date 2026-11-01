@@ -10,6 +10,9 @@ with one-click PDF invoice export.
 - `Total = sum of costs × Num Days ÷ Days in Month`.
 - Values are remembered in your browser as you type. **Save as defaults** stores the current
   items and invoice details so **Reset to defaults** brings them back next month.
+- Browser storage is per device and can be cleared, so **Copy setup link** gives you a URL with
+  your defaults embedded (bookmark it or send it to your phone; opening it restores them), and
+  **Export file** / **Import file** move the same defaults as a JSON file.
 - **Export PDF** draws the invoice in the browser with [jsPDF](https://github.com/parallax/jsPDF),
   fetched from jsDelivr on first use. Nothing is sent to a server; all data stays in your browser.
 
