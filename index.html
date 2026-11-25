@@ -579,18 +579,13 @@
       .replace(/[–—]/g, "-").replace(/…/g, "...").replace(/×/g, "x");
   }
 
-  // Draws the invoice: letterhead on the left, details and the cost table on the right.
+  // Draws the invoice: title and sender up top, a summary strip, the cost table, then the total.
   function buildPdf(jsPDF, m) {
     var doc = new jsPDF({ unit: "mm", format: "letter" });
-    var BLUE = [73, 123, 159], DARK = [67, 67, 67], MID = [95, 95, 95], DOT = [173, 173, 173];
-    var BLACK = [0, 0, 0], WHITE = [255, 255, 255];
-    var L = 19, R = 215.9 - 19;        // page margins
-    var X = 68;                        // right column: details and table
-    var COLS = [30, 40, 25, 26];       // Description, Quantity, Unit Price, Cost
-    var ROW = 8, PAD = 2, BASE = 5.5;  // row height, cell padding, text baseline within a row
-    var xs = [X];
-    COLS.forEach(function (w, i) { xs.push(xs[i] + w); });
-    var tableW = xs[4] - X;
+    var INK = [28, 32, 48], MUTED = [112, 118, 138], RULE = [222, 225, 233];
+    var SOFT = [244, 246, 251], ACCENT = [45, 62, 140], WHITE = [255, 255, 255];
+    var PAGE_W = 215.9, PAGE_H = 279.4;
+    var L = 18, R = PAGE_W - 18, W = R - L, BOTTOM = PAGE_H - 18;
     var d = m.details;
 
     function font(style, size, color) {
@@ -598,97 +593,120 @@
       doc.setFontSize(size);
       doc.setTextColor(color[0], color[1], color[2]);
     }
-    function text(str, x, y, opts) { doc.text(pdfSafe(str), x, y, opts || {}); }
-    // Shrinks a long label so it stays inside its column.
-    function cellText(str, x, y, maxW) {
+    function text(str, x, y, align) { doc.text(pdfSafe(str), x, y, { align: align || "left" }); }
+    // Small spaced-out caption, e.g. a column heading.
+    function label(str, x, y, align, color) {
+      font("bold", 7.5, color || MUTED);
+      var s = pdfSafe(str).toUpperCase(), space = 0.25;
+      if (align === "right") x -= doc.getTextWidth(s) + space * (s.length - 1);
+      doc.text(s, x, y, { charSpace: space });
+    }
+    // Shrinks a long line so it stays inside its column.
+    function fitText(str, x, y, maxW, align) {
       var size = doc.getFontSize(), s = size;
-      while (doc.getTextWidth(pdfSafe(str)) > maxW && s > 7) { s -= 0.5; doc.setFontSize(s); }
-      text(str, x, y);
+      while (doc.getTextWidth(pdfSafe(str)) > maxW && s > 6.5) { s -= 0.5; doc.setFontSize(s); }
+      text(str, x, y, align);
       doc.setFontSize(size);
     }
-    function dotted() { doc.setDrawColor(DOT[0], DOT[1], DOT[2]); doc.setLineWidth(0.2); doc.setLineDashPattern([0.4, 1.0], 0); }
-    function solid()  { doc.setDrawColor(0, 0, 0); doc.setLineWidth(0.3); doc.setLineDashPattern([], 0); }
-    function hline(y, isDotted) {
-      if (isDotted) dotted(); else solid();
-      doc.line(X, y, X + tableW, y);
-      doc.setLineDashPattern([], 0);
+    function hline(y, color, width, x1, x2) {
+      doc.setDrawColor(color[0], color[1], color[2]);
+      doc.setLineWidth(width);
+      doc.line(x1 === undefined ? L : x1, y, x2 === undefined ? R : x2, y);
     }
+    function fill(color) { doc.setFillColor(color[0], color[1], color[2]); }
 
-    // Rules top and bottom
-    doc.setDrawColor(BLUE[0], BLUE[1], BLUE[2]);
-    doc.setLineWidth(0.8);
-    doc.line(L, 14, R, 14);
-    doc.line(L, 265, R, 265);
+    // Header
+    fill(ACCENT);
+    doc.rect(0, 0, PAGE_W, 5, "F");
+    label("Rent invoice", L, 23, "left", ACCENT);
+    font("bold", 26, INK);
+    fitText(m.monthName, L, 34, W * 0.62);
+    font("normal", 9, MUTED);
+    text("Date " + fmtDateUS(m.dateISO), R, 23, "right");
+    if (d.attention) fitText("Attention: " + d.attention, R, 28, W * 0.36, "right");
 
-    // Letterhead (left column)
-    if (d.senderName) { font("bold", 15, BLUE); text(d.senderName.toUpperCase(), L, 24); }
-    font("normal", 24, DARK);
-    text("RENT", L, 56);
-    var ly = 72, leftW = X - L - 4;   // shrink long lines so they stay out of the right column
-    font("bold", 12, BLUE);
-    [d.phone, d.email].forEach(function (s) { if (s) { cellText(s, L, ly, leftW); ly += 6; } });
-    ly += 8;
-    font("bold", 12, MID);
-    [d.address1, d.address2].forEach(function (s) { if (s) { cellText(s, L, ly, leftW); ly += 8; } });
+    // Summary strip: sender, days stayed, amount due
+    var y = 46, PADX = 6;
+    var contact = [d.phone, d.email, d.address1, d.address2].filter(Boolean);
+    var fromLines = (d.senderName ? 1 : 0) + contact.length;
+    var stripH = 6 + 6 + Math.max(fromLines * 4.6 + (d.senderName ? 1 : 0), 8) + 5;
+    fill(SOFT);
+    doc.roundedRect(L, y, W, stripH, 2.5, 2.5, "F");
+    var c2 = L + W * 0.50, c3 = R - PADX, fromW = W * 0.50 - PADX * 2;
+    if (fromLines) {
+      label("From", L + PADX, y + 8.5);
+      var fy = y + 15;
+      if (d.senderName) { font("bold", 10.5, INK); fitText(d.senderName, L + PADX, fy, fromW); fy += 5.6; }
+      font("normal", 9, MUTED);
+      contact.forEach(function (s) { fitText(s, L + PADX, fy, fromW); fy += 4.6; });
+    }
+    label("Days stayed", c2, y + 8.5);
+    font("bold", 15, INK);
+    text(m.numDays + " of " + m.daysInMonth, c2, y + 16.5);
+    label("Amount due", c3, y + 8.5, "right");
+    font("bold", 15, ACCENT);
+    text(money(m.total), c3, y + 16.5, "right");
+    y += stripH + 12;
 
-    // Right column
-    var y = 56;
-    font("normal", 11, BLACK);
-    if (d.attention) { text("Attention: " + d.attention, X, y); y += 6; }
-    text("Date: " + fmtDateUS(m.dateISO), X, y); y += 10;
-    text(m.monthName + " Rent", X, y); y += 8;
-
-    // Table header
-    var tableTop = y;
-    doc.setFillColor(BLUE[0], BLUE[1], BLUE[2]);
-    doc.rect(X, y, tableW, ROW, "F");
-    font("bold", 11, WHITE);
-    ["Description", "Quantity", "Unit Price", "Cost"].forEach(function (h, i) { text(h, xs[i] + PAD, y + BASE); });
-    y += ROW;
-
-    // Line items
-    font("normal", 11, BLACK);
-    m.items.forEach(function (it, i) {
-      if (i > 0) hline(y, true);
-      cellText(it.label, xs[0] + PAD, y + BASE, COLS[0] - 2 * PAD);
-      text(fmtQty(it.qty), xs[2] - PAD, y + BASE, { align: "right" });
-      text(isFinite(it.price) ? money(it.price) : "", xs[3] - PAD, y + BASE, { align: "right" });
-      text(money(it.cost), xs[4] - PAD, y + BASE, { align: "right" });
+    // Cost table
+    var COLS = [0.46, 0.16, 0.19, 0.19], ROW = 9.5, xs = [L];
+    COLS.forEach(function (f, i) { xs.push(xs[i] + W * f); });
+    function tableHeader() {
+      label("Description", xs[0], y + 3);
+      ["Quantity", "Unit price", "Cost"].forEach(function (h, i) { label(h, xs[i + 2], y + 3, "right"); });
+      y += 6;
+      hline(y, INK, 0.4);
+    }
+    function ensureRoom(h) {
+      if (y + h <= BOTTOM) return false;
+      doc.addPage();
+      y = 18;
+      return true;
+    }
+    tableHeader();
+    m.items.forEach(function (it) {
+      if (ensureRoom(ROW)) tableHeader();
+      var base = y + 6.1;
+      font("bold", 10.5, INK);
+      fitText(it.label, xs[0], base, xs[1] - xs[0] - 4);
+      font("normal", 10.5, MUTED);
+      fitText(String(it.qtyRaw).trim(), xs[2], base, xs[2] - xs[1] - 3, "right");
+      text(isFinite(it.price) ? money(it.price) : "", xs[3], base, "right");
+      font("bold", 10.5, INK);
+      text(money(it.cost), xs[4], base, "right");
       y += ROW;
+      hline(y, RULE, 0.2);
     });
 
-    // Days, rate, total
-    function labelRow(label, value) {
-      font("bold", 11, BLACK);   text(label, xs[0] + PAD, y + BASE);
-      font("normal", 11, BLACK); text(value, xs[2] - PAD, y + BASE, { align: "right" });
-      y += ROW;
+    // Subtotal, days, rate, total
+    var boxW = W * 0.46, boxX = R - boxW, SUM = 7;
+    ensureRoom(4 + SUM * 3 + 4 + 14);
+    y += 4;
+    function sumRow(name, value) {
+      font("normal", 10, MUTED); text(name, boxX + 5, y + 4.8);
+      font("normal", 10, INK);   text(value, R - 5, y + 4.8, "right");
+      y += SUM;
     }
-    hline(y, false);
-    labelRow("Num Days", String(m.numDays));
-    labelRow("Days in Month", String(m.daysInMonth));
-    hline(y, false);
-    labelRow("Rate", fmtQty(m.rate));
-    hline(y, false);
-    text("Total", xs[2] + PAD, y + BASE);
-    text(money(m.total), xs[4] - PAD, y + BASE, { align: "right" });
-    y += ROW;
-    hline(y, false);
-
-    // Dotted column separators
-    dotted();
-    for (var c = 1; c < 4; c++) doc.line(xs[c], tableTop + ROW, xs[c], y);
-    doc.setLineDashPattern([], 0);
+    sumRow("Subtotal", money(m.subtotal));
+    sumRow("Days stayed", m.numDays + " of " + m.daysInMonth);
+    sumRow("Rate", m.rate.toLocaleString("en-US", { maximumFractionDigits: 6 }));
+    y += 3;
+    fill(ACCENT);
+    doc.roundedRect(boxX, y, boxW, 14, 2.5, 2.5, "F");
+    label("Total due", boxX + 5, y + 8.3, "left", WHITE);
+    font("bold", 15, WHITE);
+    text(money(m.total), R - 5, y + 9.3, "right");
+    y += 14;
 
     // Closing
-    y += 14;
-    font("normal", 11, BLACK);
-    if (d.closing) {
-      var lines = doc.splitTextToSize(pdfSafe(d.closing), R - X);
-      doc.text(lines, X, y);
-      y += 5 * lines.length + 5;
-    }
-    text("Sincerely yours,", X, y); y += 9;
-    if (d.senderName) text(d.senderName, X, y);
+    font("normal", 10.5, INK);
+    var closing = d.closing ? doc.splitTextToSize(pdfSafe(d.closing), W * 0.7) : [];
+    ensureRoom(16 + closing.length * 5 + 16);
+    y += 16;
+    if (closing.length) { doc.text(closing, L, y); y += 5 * closing.length + 4; }
+    font("normal", 10.5, MUTED);
+    text("Sincerely yours,", L, y); y += 6;
+    if (d.senderName) { font("bold", 10.5, INK); text(d.senderName, L, y); }
 
     return doc;
   }
